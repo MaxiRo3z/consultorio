@@ -1,0 +1,122 @@
+use consultorio;
+-- Usuarios (pacientes, médicos, admins)
+CREATE TABLE usuarios (
+    id_usuario INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    apellido VARCHAR(100) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    telefono VARCHAR(20),
+    dni VARCHAR(20) UNIQUE,
+    es_admin BOOLEAN DEFAULT FALSE,
+    activo BOOLEAN DEFAULT TRUE,
+    fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Especialidades médicas (Cardiología, Pediatría, etc.)
+CREATE TABLE especialidades (
+    id_especialidad INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(100) UNIQUE NOT NULL,
+    descripcion TEXT
+);
+
+-- Médicos
+CREATE TABLE medicos (
+    id_medico INT AUTO_INCREMENT PRIMARY KEY,
+    id_usuario INT NOT NULL,
+    matricula VARCHAR(50) UNIQUE NOT NULL,
+    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE CASCADE
+);
+
+-- Relación muchos-a-muchos: Médicos y Especialidades
+CREATE TABLE medico_especialidad (
+    id_medico INT NOT NULL,
+    id_especialidad INT NOT NULL,
+    PRIMARY KEY (id_medico, id_especialidad),
+    FOREIGN KEY (id_medico) REFERENCES medicos(id_medico) ON DELETE CASCADE,
+    FOREIGN KEY (id_especialidad) REFERENCES especialidades(id_especialidad) ON DELETE CASCADE
+);
+
+-- Disponibilidad horaria semanal del médico
+CREATE TABLE disponibilidad (
+    id_disponibilidad INT AUTO_INCREMENT PRIMARY KEY,
+    id_medico INT NOT NULL,
+    dia_semana ENUM('lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado') NOT NULL,
+    hora_inicio TIME NOT NULL,
+    hora_fin TIME NOT NULL,
+    FOREIGN KEY (id_medico) REFERENCES medicos(id_medico) ON DELETE CASCADE
+);
+
+-- Turnos reservados
+CREATE TABLE turnos (
+    id_turno INT AUTO_INCREMENT PRIMARY KEY,
+    id_usuario INT NOT NULL,
+    id_medico INT NOT NULL,
+    fecha DATE NOT NULL,
+    hora_inicio TIME NOT NULL,
+    hora_fin TIME NOT NULL,
+    estado ENUM('pendiente', 'confirmado', 'cancelado', 'finalizado') DEFAULT 'pendiente',
+    motivo_consulta TEXT,
+    observaciones TEXT,
+    FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
+    FOREIGN KEY (id_medico) REFERENCES medicos(id_medico) ON DELETE CASCADE
+);
+
+-- Historial de cambios de estado en turnos
+CREATE TABLE historial_turnos (
+    id_historial INT AUTO_INCREMENT PRIMARY KEY,
+    id_turno INT NOT NULL,
+    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    estado_anterior ENUM('pendiente', 'confirmado', 'cancelado', 'finalizado'),
+    estado_nuevo ENUM('pendiente', 'confirmado', 'cancelado', 'finalizado'),
+    observacion TEXT,
+    FOREIGN KEY (id_turno) REFERENCES turnos(id_turno) ON DELETE CASCADE
+);
+
+-- Trigger para evitar superposición de turnos
+DELIMITER //
+
+CREATE TRIGGER evitar_superposicion_turnos
+BEFORE INSERT ON turnos
+FOR EACH ROW
+BEGIN
+    DECLARE conflictos INT;
+
+    SELECT COUNT(*) INTO conflictos
+    FROM turnos
+    WHERE id_medico = NEW.id_medico
+      AND fecha = NEW.fecha
+      AND (
+          (NEW.hora_inicio BETWEEN hora_inicio AND hora_fin) OR
+          (NEW.hora_fin BETWEEN hora_inicio AND hora_fin) OR
+          (hora_inicio BETWEEN NEW.hora_inicio AND NEW.hora_fin)
+      );
+
+    IF conflictos > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Error: El médico ya tiene un turno en ese horario.';
+    END IF;
+END;
+//
+
+-- Trigger para validar que el turno esté dentro del horario declarado del médico
+CREATE TRIGGER validar_disponibilidad_turno
+BEFORE INSERT ON turnos
+FOR EACH ROW
+BEGIN
+    DECLARE disponible INT;
+
+    SELECT COUNT(*) INTO disponible
+    FROM disponibilidad
+    WHERE id_medico = NEW.id_medico
+      AND dia_semana = LOWER(DAYNAME(NEW.fecha))
+      AND NEW.hora_inicio >= hora_inicio
+      AND NEW.hora_fin <= hora_fin;
+
+    IF disponible = 0 THEN
+        SIGNAL SQLSTATE '45001'
+        SET MESSAGE_TEXT = 'Error: El turno está fuera del horario de atención del médico.';
+    END IF;
+END;
+//
+
+DELIMITER ;
